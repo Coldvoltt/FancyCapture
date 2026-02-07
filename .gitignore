@@ -3,7 +3,9 @@ node_modules/
 
 # Build output
 dist/
+dist-electron/
 release/
+out/
 
 # IDE
 .vscode/
@@ -14,6 +16,7 @@ release/
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Logs
 *.log
@@ -27,3 +30,13 @@ npm-debug.log*
 # Cache
 .cache/
 *.tsbuildinfo
+
+# Vite
+vite.config.ts.timestamp-*
+vite.config.*.timestamp-*
+
+# Electron
+electron-builder.yaml.bak
+
+# Claude Code
+.claude/settings.local.json
