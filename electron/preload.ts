@@ -97,6 +97,7 @@ const electronAPI = {
     position: { x: number; y: number };
     previewWidth: number;
     previewHeight: number;
+    displayBounds?: { x: number; y: number; width: number; height: number };
   }): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('show-camera-bubble', config),
   hideCameraBubble: (): Promise<{ success: boolean }> =>

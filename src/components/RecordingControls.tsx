@@ -244,10 +244,27 @@ function RecordingControls() {
         await new Promise(r => setTimeout(r, 5000));
       }
 
-      // Get screen size once — used for both background rendering and gdigrab region
-      const screenSize = hasScreen ? await platform.getScreenSize() : null;
-      const physicalScreenW = screenSize ? Math.round(screenSize.width * screenSize.scaleFactor) : 0;
-      const physicalScreenH = screenSize ? Math.round(screenSize.height * screenSize.scaleFactor) : 0;
+      // Get screen size from the SELECTED source's display bounds (multi-monitor aware).
+      // Falls back to platform.getScreenSize() (primary display) if bounds not available.
+      let physicalScreenW = 0;
+      let physicalScreenH = 0;
+      let displayOffsetX = 0;
+      let displayOffsetY = 0;
+
+      if (hasScreen && state.selectedSource?.displayBounds && state.selectedSource?.scaleFactor) {
+        const bounds = state.selectedSource.displayBounds;
+        const sf = state.selectedSource.scaleFactor;
+        physicalScreenW = Math.round(bounds.width * sf);
+        physicalScreenH = Math.round(bounds.height * sf);
+        displayOffsetX = bounds.x;
+        displayOffsetY = bounds.y;
+        console.log('Using selected source display bounds:', { bounds, sf, physicalScreenW, physicalScreenH, displayOffsetX, displayOffsetY });
+      } else if (hasScreen) {
+        console.log('No display bounds on selected source, falling back to getScreenSize(). Source:', state.selectedSource);
+        const screenSize = await platform.getScreenSize();
+        physicalScreenW = Math.round(screenSize.width * screenSize.scaleFactor);
+        physicalScreenH = Math.round(screenSize.height * screenSize.scaleFactor);
+      }
 
       if (hasBackgroundEnabled) {
         const allBgs = [...defaultBackgrounds, ...state.backgroundConfig.customBackgrounds];
@@ -268,8 +285,8 @@ function RecordingControls() {
           // Step 1: Determine target content area dimensions (must match screen aspect ratio)
           let contentW: number, contentH: number;
           if (!resPreset || resPreset.id === 'source' || resPreset.width === 0) {
-            // Cap content height for performance (filter_complex + scaling is expensive)
-            const maxContentH = 720;
+            // Cap content height for performance
+            const maxContentH = 1080;
             if (srcH > maxContentH) {
               const scale = maxContentH / srcH;
               contentW = Math.round(srcW * scale);
@@ -306,13 +323,12 @@ function RecordingControls() {
         }
       }
 
-      // Cap fps when background is enabled — filter_complex + scaling can't keep up at 30fps
-      const effectiveFps = hasBackgroundEnabled ? Math.min(state.recordingFps, 24) : state.recordingFps;
+      const effectiveFps = hasBackgroundEnabled ? Math.min(state.recordingFps, 30) : state.recordingFps;
 
-      // Compute screen capture region for gdigrab (constrains to single monitor)
+      // Compute screen capture region for gdigrab (constrains to selected monitor)
       let screenRegion: { x: number; y: number; w: number; h: number } | undefined;
       if (hasScreen && isDesktopCapture && physicalScreenW > 0) {
-        screenRegion = { x: 0, y: 0, w: physicalScreenW, h: physicalScreenH };
+        screenRegion = { x: displayOffsetX, y: displayOffsetY, w: physicalScreenW, h: physicalScreenH };
       }
 
       const config = {
@@ -397,7 +413,8 @@ function RecordingControls() {
           postProcessConfigRef.current = null;
         }
       } else if (effectiveUseFloatingCamera) {
-        // Show floating camera bubble for desktop screen-camera mode (non-background)
+        // Show floating camera bubble for desktop screen-camera mode (non-background).
+        // Position on the selected display so gdigrab captures it.
         platform.showCameraBubble({
           deviceId: state.selectedCamera,
           shape: state.cameraShape,
@@ -405,6 +422,7 @@ function RecordingControls() {
           position: state.cameraPosition,
           previewWidth: state.previewDimensions.width,
           previewHeight: state.previewDimensions.height,
+          displayBounds: state.selectedSource?.displayBounds || undefined,
         });
       }
 
@@ -455,6 +473,7 @@ function RecordingControls() {
           position: state.cameraPosition,
           previewWidth: state.previewDimensions.width,
           previewHeight: state.previewDimensions.height,
+          displayBounds: state.selectedSource?.displayBounds || undefined,
         });
       }
     }

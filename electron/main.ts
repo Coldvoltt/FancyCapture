@@ -159,6 +159,7 @@ interface CameraBubbleConfig {
   position: { x: number; y: number };
   previewWidth: number;
   previewHeight: number;
+  displayBounds?: { x: number; y: number; width: number; height: number };
 }
 
 function createCameraBubble(config: CameraBubbleConfig): void {
@@ -166,8 +167,18 @@ function createCameraBubble(config: CameraBubbleConfig): void {
     destroyCameraBubble();
   }
 
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width: screenW, height: screenH } = primaryDisplay.workAreaSize;
+  // Use the target display bounds if provided, otherwise fall back to primary
+  let screenX = 0, screenY = 0, screenW: number, screenH: number;
+  if (config.displayBounds) {
+    screenX = config.displayBounds.x;
+    screenY = config.displayBounds.y;
+    screenW = config.displayBounds.width;
+    screenH = config.displayBounds.height;
+  } else {
+    const primaryDisplay = screen.getPrimaryDisplay();
+    screenW = primaryDisplay.workAreaSize.width;
+    screenH = primaryDisplay.workAreaSize.height;
+  }
 
   // Map camera size/position from preview coordinates to screen coordinates
   const scaleX = screenW / config.previewWidth;
@@ -175,14 +186,14 @@ function createCameraBubble(config: CameraBubbleConfig): void {
   const scale = Math.min(scaleX, scaleY);
 
   const bubbleSize = Math.round(Math.max(150, Math.min(400, config.size * scale)));
-  const bubbleX = Math.round(Math.min(config.position.x * scaleX, screenW - bubbleSize - 10));
-  const bubbleY = Math.round(Math.min(config.position.y * scaleY, screenH - bubbleSize - 10));
+  const bubbleX = screenX + Math.round(Math.min(config.position.x * scaleX, screenW - bubbleSize - 10));
+  const bubbleY = screenY + Math.round(Math.min(config.position.y * scaleY, screenH - bubbleSize - 10));
 
   cameraBubbleWindow = new BrowserWindow({
     width: bubbleSize,
     height: bubbleSize,
-    x: Math.max(0, bubbleX),
-    y: Math.max(0, bubbleY),
+    x: Math.max(screenX, bubbleX),
+    y: Math.max(screenY, bubbleY),
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -296,13 +307,67 @@ ipcMain.handle('get-sources', async () => {
       fetchWindowIcons: true,
     });
 
-    return sources.map(source => ({
-      id: source.id,
-      name: source.name,
-      thumbnail: source.thumbnail.toDataURL(),
-      appIcon: source.appIcon?.toDataURL() || null,
-      isScreen: source.id.startsWith('screen:'),
-    }));
+    // Get all displays for matching screen sources to their monitor bounds.
+    // Do NOT sort — keep OS natural order to match desktopCapturer ordering.
+    const displays = screen.getAllDisplays();
+
+    console.log('All displays:', displays.map(d => ({
+      id: d.id, bounds: d.bounds, scaleFactor: d.scaleFactor,
+    })));
+
+    // Screen sources from desktopCapturer use IDs like "screen:INDEX:0"
+    const screenSources = sources.filter(s => s.id.startsWith('screen:'));
+
+    return sources.map(source => {
+      const isScreen = source.id.startsWith('screen:');
+      let displayBounds: { x: number; y: number; width: number; height: number } | null = null;
+      let scaleFactor: number | null = null;
+
+      if (isScreen) {
+        let matchedDisplay = null;
+
+        // Extract the numeric part from source ID (format: "screen:N" or "screen:N:0")
+        const idMatch = source.id.match(/^screen:(\d+)/);
+        if (idMatch) {
+          const sourceNum = parseInt(idMatch[1]);
+
+          // Try as display.id first (works on some platforms)
+          matchedDisplay = displays.find(d => d.id === sourceNum);
+
+          // If no match, try as sequential display index (common on Windows
+          // where display.id is a large OS number but source uses 0,1,2...)
+          if (!matchedDisplay && sourceNum < displays.length) {
+            matchedDisplay = displays[sourceNum];
+          }
+        }
+
+        // Final fallback: use position among screen sources
+        if (!matchedDisplay) {
+          const screenIdx = screenSources.indexOf(source);
+          if (screenIdx >= 0 && screenIdx < displays.length) {
+            matchedDisplay = displays[screenIdx];
+          }
+        }
+
+        if (matchedDisplay) {
+          displayBounds = matchedDisplay.bounds;
+          scaleFactor = matchedDisplay.scaleFactor;
+          console.log(`Screen source "${source.name}" (${source.id}) → display id=${matchedDisplay.id}, bounds=${JSON.stringify(matchedDisplay.bounds)}, scale=${matchedDisplay.scaleFactor}`);
+        } else {
+          console.warn(`Screen source "${source.name}" (${source.id}) — no matching display found!`);
+        }
+      }
+
+      return {
+        id: source.id,
+        name: source.name,
+        thumbnail: source.thumbnail.toDataURL(),
+        appIcon: source.appIcon?.toDataURL() || null,
+        isScreen,
+        displayBounds,
+        scaleFactor,
+      };
+    });
   } catch (error) {
     console.error('Error getting sources:', error);
     return [];

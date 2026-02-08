@@ -213,6 +213,7 @@ export const platform = {
     position: { x: number; y: number };
     previewWidth: number;
     previewHeight: number;
+    displayBounds?: { x: number; y: number; width: number; height: number };
   }): Promise<void> {
     if (isElectron) window.electronAPI.showCameraBubble(config);
   },

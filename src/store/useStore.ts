@@ -33,6 +33,8 @@ export interface ScreenSource {
   thumbnail: string;
   appIcon: string | null;
   isScreen: boolean;
+  displayBounds?: { x: number; y: number; width: number; height: number };
+  scaleFactor?: number;
 }
 
 export interface ZoomConfig {

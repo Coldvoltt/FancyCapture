@@ -66,6 +66,7 @@ interface ElectronAPI {
     position: { x: number; y: number };
     previewWidth: number;
     previewHeight: number;
+    displayBounds?: { x: number; y: number; width: number; height: number };
   }) => Promise<{ success: boolean }>;
   hideCameraBubble: () => Promise<{ success: boolean }>;
   onCameraBubbleConfig: (callback: (config: { deviceId: string | null; shape: string }) => void) => void;

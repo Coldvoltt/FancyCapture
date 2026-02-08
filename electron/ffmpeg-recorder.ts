@@ -619,19 +619,19 @@ export class FFmpegRecorder {
 
     if (encoder.encoder === 'libx264') {
       args.push('-preset', 'ultrafast');
-      args.push('-crf', '23');
+      args.push('-crf', '18');
     } else if (encoder.encoder === 'h264_nvenc') {
       args.push('-preset', 'p4');
-      args.push('-cq', '23');
+      args.push('-cq', '18');
       args.push('-rc', 'vbr');
     } else if (encoder.encoder === 'h264_amf') {
       args.push('-quality', 'speed');
       args.push('-rc', 'cqp');
-      args.push('-qp_i', '23');
-      args.push('-qp_p', '23');
+      args.push('-qp_i', '18');
+      args.push('-qp_p', '18');
     } else if (encoder.encoder === 'h264_qsv') {
       args.push('-preset', 'fast');
-      args.push('-global_quality', '23');
+      args.push('-global_quality', '18');
     }
 
     args.push('-pix_fmt', 'yuv420p');
@@ -869,13 +869,13 @@ export class FFmpegRecorder {
 
     // Encoder-specific settings
     if (encoder.encoder === 'libx264') {
-      args.push('-preset', 'fast', '-crf', '20');
+      args.push('-preset', 'fast', '-crf', '18');
     } else if (encoder.encoder === 'h264_nvenc') {
-      args.push('-preset', 'p4', '-cq', '20', '-rc', 'vbr');
+      args.push('-preset', 'p4', '-cq', '18', '-rc', 'vbr');
     } else if (encoder.encoder === 'h264_amf') {
-      args.push('-quality', 'speed', '-rc', 'cqp', '-qp_i', '20', '-qp_p', '20');
+      args.push('-quality', 'speed', '-rc', 'cqp', '-qp_i', '18', '-qp_p', '18');
     } else if (encoder.encoder === 'h264_qsv') {
-      args.push('-preset', 'fast', '-global_quality', '20');
+      args.push('-preset', 'fast', '-global_quality', '18');
     }
 
     args.push('-pix_fmt', 'yuv420p');
