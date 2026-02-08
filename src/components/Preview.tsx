@@ -19,6 +19,7 @@ function Preview() {
     webScreenStream,
     isZooming,
     setIsZooming,
+    previewCameraSuspended,
   } = useStore();
 
   const allBackgrounds = [...defaultBackgrounds, ...backgroundConfig.customBackgrounds];
@@ -112,12 +113,13 @@ function Preview() {
     };
   }, [showScreen, selectedSource?.id, webScreenStream]);
 
-  // Get camera stream
+  // Get camera stream (release when suspended so FFmpeg dshow can use the device)
   useEffect(() => {
-    if (!showCamera) {
+    if (!showCamera || previewCameraSuspended) {
       if (cameraStream) {
         cameraStream.getTracks().forEach((track) => track.stop());
         setCameraStream(null);
+        useStore.getState().setPreviewCameraStream(null);
       }
       return;
     }
@@ -142,6 +144,7 @@ function Preview() {
 
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         setCameraStream(stream);
+        useStore.getState().setPreviewCameraStream(stream);
         if (cameraVideoRef.current) {
           cameraVideoRef.current.srcObject = stream;
         }
@@ -155,9 +158,10 @@ function Preview() {
     return () => {
       if (cameraStream) {
         cameraStream.getTracks().forEach((track) => track.stop());
+        useStore.getState().setPreviewCameraStream(null);
       }
     };
-  }, [showCamera, selectedCamera]);
+  }, [showCamera, selectedCamera, previewCameraSuspended]);
 
   // Handle camera dragging
   const handleMouseDown = useCallback((e: React.MouseEvent) => {

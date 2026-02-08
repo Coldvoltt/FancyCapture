@@ -8,7 +8,21 @@
       "Bash(npx electron-packager:*)",
       "Bash(npx electron:*)",
       "Bash(npm run build:renderer:*)",
-      "Bash(npm run build:web:*)"
+      "Bash(npm run build:web:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run package:win:*)",
+      "Bash(npm run pack:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.electronjs.org)",
+      "WebFetch(domain:developer.chrome.com)",
+      "Bash(\"C:\\\\Users\\\\pauli\\\\Projects\\\\FancyCapture\\\\node_modules\\\\@ffmpeg-installer\\\\win32-x64\\\\ffmpeg.exe\" -f gdigrab -i desktop -t 1 -f null -)",
+      "Bash(findstr:*)",
+      "Bash(\"C:/Users/pauli/Projects/FancyCapture/release/FancyCapture-win32-x64/resources/ffmpeg.exe\" -version)",
+      "Bash(cmd.exe /c \"taskkill /IM FancyCapture.exe /F\")",
+      "Bash(cmd.exe /c \"taskkill /IM FancyCapture.exe /F 2>nul & taskkill /IM electron.exe /F 2>nul & echo done\")",
+      "Bash(cmd.exe /c \"rmdir /s /q C:\\\\Users\\\\pauli\\\\Projects\\\\FancyCapture\\\\release\\\\FancyCapture-win32-x64 2>nul & echo cleared\")",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

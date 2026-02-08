@@ -40,6 +40,12 @@ const electronAPI = {
   showFolderDialog: (): Promise<string | null> => ipcRenderer.invoke('show-folder-dialog'),
   saveFile: (filePath: string, buffer: ArrayBuffer): Promise<SaveResult> =>
     ipcRenderer.invoke('save-file', filePath, buffer),
+  streamFileOpen: (filePath: string): Promise<{ success: boolean; handleId?: number; error?: string }> =>
+    ipcRenderer.invoke('stream-file-open', filePath),
+  streamFileAppend: (handleId: number, chunk: ArrayBuffer): void =>
+    ipcRenderer.send('stream-file-append', handleId, chunk),
+  streamFileClose: (handleId: number): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('stream-file-close', handleId),
   pathExists: (filePath: string): Promise<boolean> => ipcRenderer.invoke('path-exists', filePath),
   getDefaultFolder: (): Promise<string> => ipcRenderer.invoke('get-default-folder'),
   convertToMp4: (webmPath: string, mp4Path: string): Promise<SaveResult> =>
@@ -75,6 +81,78 @@ const electronAPI = {
   removeFloatingControlListeners: () => {
     ipcRenderer.removeAllListeners('recording-state-update');
     ipcRenderer.removeAllListeners('floating-control-action');
+  },
+
+  // Window management
+  minimizeMainWindow: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('minimize-main-window'),
+  restoreMainWindow: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('restore-main-window'),
+
+  // Camera bubble
+  showCameraBubble: (config: {
+    deviceId: string | null;
+    shape: string;
+    size: number;
+    position: { x: number; y: number };
+    previewWidth: number;
+    previewHeight: number;
+  }): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('show-camera-bubble', config),
+  hideCameraBubble: (): Promise<{ success: boolean }> =>
+    ipcRenderer.invoke('hide-camera-bubble'),
+  onCameraBubbleConfig: (callback: (config: { deviceId: string | null; shape: string }) => void) => {
+    ipcRenderer.on('camera-bubble-config', (_, config) => callback(config));
+  },
+
+  // FFmpeg sidecar recording
+  ffmpegDetectEncoder: (): Promise<{ encoder: string; type: string }> =>
+    ipcRenderer.invoke('ffmpeg-detect-encoder'),
+  ffmpegStartRecording: (config: {
+    mode: string;
+    screenSource: { id: string; name: string; isScreen: boolean } | null;
+    cameraLabel: string | null;
+    cameraSize: number;
+    cameraPosition: { x: number; y: number };
+    cameraShape: string;
+    microphoneLabel: string | null;
+    outputFolder: string;
+    outputResolution: string;
+    fps: number;
+    previewWidth: number;
+    previewHeight: number;
+    useFloatingCamera?: boolean;
+    screenRegion?: { x: number; y: number; w: number; h: number };
+    backgroundData?: string;
+    foregroundData?: string;
+    backgroundContentArea?: { x: number; y: number; w: number; h: number };
+    backgroundOutputSize?: { w: number; h: number };
+  }): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('ffmpeg-start-recording', config),
+  ffmpegPauseRecording: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('ffmpeg-pause-recording'),
+  ffmpegResumeRecording: (): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('ffmpeg-resume-recording'),
+  ffmpegStopRecording: (): Promise<{ success: boolean; outputPath?: string; error?: string }> =>
+    ipcRenderer.invoke('ffmpeg-stop-recording'),
+  ffmpegPostProcessCamera: (config: {
+    screenPath: string;
+    cameraPath: string;
+    outputPath: string;
+    cameraSize: number;
+    cameraPosition: { x: number; y: number };
+    cameraShape: string;
+    outputWidth: number;
+    outputHeight: number;
+    previewWidth: number;
+    previewHeight: number;
+  }): Promise<{ success: boolean; outputPath?: string; error?: string }> =>
+    ipcRenderer.invoke('ffmpeg-post-process-camera', config),
+  onFfmpegError: (callback: (data: { error: string }) => void) => {
+    ipcRenderer.on('ffmpeg-error', (_, data) => callback(data));
+  },
+  removeFfmpegListeners: () => {
+    ipcRenderer.removeAllListeners('ffmpeg-error');
   },
 };
 

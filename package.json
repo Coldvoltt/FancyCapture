@@ -13,7 +13,7 @@
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
     "start": "electron .",
-    "pack": "npm run build && electron-packager . FancyCapture --platform=win32 --arch=x64 --out=release --overwrite --asar --ignore=\"^/src\" --ignore=\"^/electron\" --ignore=\"^/\\.\" --ignore=\"tsconfig\"",
+    "pack": "npm run build && electron-packager . FancyCapture --platform=win32 --arch=x64 --out=release --overwrite --asar --extra-resource=node_modules/@ffmpeg-installer/win32-x64/ffmpeg.exe --ignore=\"^/src\" --ignore=\"^/electron\" --ignore=\"^/\\.\" --ignore=\"tsconfig\"",
     "package": "npm run build && electron-builder",
     "package:win": "npm run build && electron-builder --win",
     "package:mac": "npm run build && electron-builder --mac",

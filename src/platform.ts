@@ -6,6 +6,13 @@
 
 export const isElectron = !!(window as any).electronAPI;
 
+export interface FileStreamHandle {
+  /** Append a chunk of data to the open file stream */
+  append(chunk: ArrayBuffer): Promise<{ success: boolean; error?: string }>;
+  /** Finalize and close the stream. On web, this triggers the browser download. */
+  close(): Promise<{ success: boolean; error?: string }>;
+}
+
 /** Get a screen capture stream appropriate for the current platform. */
 export async function getScreenCaptureStream(sourceId: string): Promise<MediaStream> {
   if (isElectron) {
@@ -82,6 +89,56 @@ export const platform = {
     }
   },
 
+  async openFileStream(filePath: string): Promise<{ success: boolean; stream?: FileStreamHandle; error?: string }> {
+    if (isElectron) {
+      const result = await window.electronAPI.streamFileOpen(filePath);
+      if (!result.success || result.handleId === undefined) {
+        return { success: false, error: result.error || 'Failed to open file stream' };
+      }
+      const handleId = result.handleId;
+      const stream: FileStreamHandle = {
+        async append(chunk: ArrayBuffer) {
+          // Fire-and-forget: send() doesn't wait for write to finish,
+          // avoiding IPC round-trip blocking on the renderer
+          window.electronAPI.streamFileAppend(handleId, chunk);
+          return { success: true };
+        },
+        async close() {
+          return window.electronAPI.streamFileClose(handleId);
+        },
+      };
+      return { success: true, stream };
+    }
+
+    // Web fallback: accumulate chunks in memory, download on close
+    const chunks: ArrayBuffer[] = [];
+    const filename = filePath.split(/[/\\]/).pop() || 'recording.webm';
+    const stream: FileStreamHandle = {
+      async append(chunk: ArrayBuffer) {
+        chunks.push(chunk);
+        return { success: true };
+      },
+      async close() {
+        try {
+          const blob = new Blob(chunks, { type: 'video/webm' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          chunks.length = 0;
+          return { success: true };
+        } catch (error) {
+          return { success: false, error: String(error) };
+        }
+      },
+    };
+    return { success: true, stream };
+  },
+
   async showFolderDialog(): Promise<string | null> {
     if (isElectron) return window.electronAPI.showFolderDialog();
     // Web: no folder dialog available
@@ -138,5 +195,84 @@ export const platform = {
   },
   removeFloatingControlListeners(): void {
     if (isElectron) (window as any).electronAPI.removeFloatingControlListeners();
+  },
+
+  // Window management — Electron only
+  async minimizeMainWindow(): Promise<void> {
+    if (isElectron) window.electronAPI.minimizeMainWindow();
+  },
+  async restoreMainWindow(): Promise<void> {
+    if (isElectron) window.electronAPI.restoreMainWindow();
+  },
+
+  // Camera bubble — Electron only
+  async showCameraBubble(config: {
+    deviceId: string | null;
+    shape: string;
+    size: number;
+    position: { x: number; y: number };
+    previewWidth: number;
+    previewHeight: number;
+  }): Promise<void> {
+    if (isElectron) window.electronAPI.showCameraBubble(config);
+  },
+  async hideCameraBubble(): Promise<void> {
+    if (isElectron) window.electronAPI.hideCameraBubble();
+  },
+
+  // FFmpeg sidecar recording — Electron only
+  async ffmpegDetectEncoder(): Promise<{ encoder: string; type: string }> {
+    if (isElectron) return window.electronAPI.ffmpegDetectEncoder();
+    return { encoder: 'none', type: 'software' };
+  },
+  async ffmpegStartRecording(config: {
+    mode: string;
+    screenSource: { id: string; name: string; isScreen: boolean } | null;
+    cameraLabel: string | null;
+    cameraSize: number;
+    cameraPosition: { x: number; y: number };
+    cameraShape: string;
+    microphoneLabel: string | null;
+    outputFolder: string;
+    outputResolution: string;
+    fps: number;
+    previewWidth: number;
+    previewHeight: number;
+    useFloatingCamera?: boolean;
+    screenRegion?: { x: number; y: number; w: number; h: number };
+    backgroundData?: string;
+    foregroundData?: string;
+    backgroundContentArea?: { x: number; y: number; w: number; h: number };
+    backgroundOutputSize?: { w: number; h: number };
+  }): Promise<{ success: boolean; error?: string }> {
+    if (isElectron) return window.electronAPI.ffmpegStartRecording(config);
+    return { success: false, error: 'FFmpeg recording not available on web' };
+  },
+  async ffmpegPauseRecording(): Promise<{ success: boolean; error?: string }> {
+    if (isElectron) return window.electronAPI.ffmpegPauseRecording();
+    return { success: false, error: 'Not available on web' };
+  },
+  async ffmpegResumeRecording(): Promise<{ success: boolean; error?: string }> {
+    if (isElectron) return window.electronAPI.ffmpegResumeRecording();
+    return { success: false, error: 'Not available on web' };
+  },
+  async ffmpegStopRecording(): Promise<{ success: boolean; outputPath?: string; error?: string }> {
+    if (isElectron) return window.electronAPI.ffmpegStopRecording();
+    return { success: false, error: 'Not available on web' };
+  },
+  async ffmpegPostProcessCamera(config: {
+    screenPath: string;
+    cameraPath: string;
+    outputPath: string;
+    cameraSize: number;
+    cameraPosition: { x: number; y: number };
+    cameraShape: string;
+    outputWidth: number;
+    outputHeight: number;
+    previewWidth: number;
+    previewHeight: number;
+  }): Promise<{ success: boolean; outputPath?: string; error?: string }> {
+    if (isElectron) return window.electronAPI.ffmpegPostProcessCamera(config);
+    return { success: false, error: 'Not available on web' };
   },
 };

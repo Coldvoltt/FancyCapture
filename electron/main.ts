@@ -3,12 +3,27 @@ import * as path from 'path';
 import * as fs from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import { FFmpegRecorder, RecordingConfig } from './ffmpeg-recorder';
 
-// Set FFmpeg path
+// Set FFmpeg path (for fluent-ffmpeg WebM→MP4 conversion, kept for web compatibility)
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
 let mainWindow: BrowserWindow | null = null;
 let floatingControlsWindow: BrowserWindow | null = null;
+let cameraBubbleWindow: BrowserWindow | null = null;
+
+// --- FFmpeg sidecar recorder ---
+let recorder: FFmpegRecorder;
+try {
+  recorder = new FFmpegRecorder();
+} catch (err) {
+  console.error('FFmpegRecorder init failed:', err);
+  recorder = null as any; // Will be checked at call sites
+}
+
+// --- Streaming file write state (kept for web compatibility) ---
+const openFileHandles = new Map<number, fs.promises.FileHandle>();
+let nextFileHandleId = 1;
 
 const isDev = !app.isPackaged;
 
@@ -137,7 +152,85 @@ function hideFloatingControls(): void {
   }
 }
 
-app.whenReady().then(() => {
+interface CameraBubbleConfig {
+  deviceId: string | null;
+  shape: string;
+  size: number;
+  position: { x: number; y: number };
+  previewWidth: number;
+  previewHeight: number;
+}
+
+function createCameraBubble(config: CameraBubbleConfig): void {
+  if (cameraBubbleWindow) {
+    destroyCameraBubble();
+  }
+
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width: screenW, height: screenH } = primaryDisplay.workAreaSize;
+
+  // Map camera size/position from preview coordinates to screen coordinates
+  const scaleX = screenW / config.previewWidth;
+  const scaleY = screenH / config.previewHeight;
+  const scale = Math.min(scaleX, scaleY);
+
+  const bubbleSize = Math.round(Math.max(150, Math.min(400, config.size * scale)));
+  const bubbleX = Math.round(Math.min(config.position.x * scaleX, screenW - bubbleSize - 10));
+  const bubbleY = Math.round(Math.min(config.position.y * scaleY, screenH - bubbleSize - 10));
+
+  cameraBubbleWindow = new BrowserWindow({
+    width: bubbleSize,
+    height: bubbleSize,
+    x: Math.max(0, bubbleX),
+    y: Math.max(0, bubbleY),
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    hasShadow: false,
+    focusable: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+      backgroundThrottling: false,
+    },
+  });
+
+  cameraBubbleWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // Prevent the camera bubble from stealing focus
+  cameraBubbleWindow.setAlwaysOnTop(true, 'screen-saver');
+
+  if (isDev) {
+    cameraBubbleWindow.loadURL('http://localhost:5173/#/camera-bubble');
+  } else {
+    cameraBubbleWindow.loadFile(path.join(__dirname, '../renderer/index.html'), {
+      hash: '/camera-bubble',
+    });
+  }
+
+  // Send camera config once loaded
+  cameraBubbleWindow.webContents.once('did-finish-load', () => {
+    cameraBubbleWindow?.webContents.send('camera-bubble-config', {
+      deviceId: config.deviceId,
+      shape: config.shape,
+    });
+  });
+
+  cameraBubbleWindow.on('closed', () => {
+    cameraBubbleWindow = null;
+  });
+}
+
+function destroyCameraBubble(): void {
+  if (cameraBubbleWindow) {
+    cameraBubbleWindow.close();
+    cameraBubbleWindow = null;
+  }
+}
+
+app.whenReady().then(async () => {
   // Grant media permissions for all windows
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
     // Grant camera and microphone permissions
@@ -147,6 +240,25 @@ app.whenReady().then(() => {
     }
     callback(true);
   });
+
+  // Detect best available hardware encoder at startup
+  if (recorder) {
+    try {
+      const encoder = await recorder.detectEncoder();
+      console.log(`Encoder detected: ${encoder.encoder} (${encoder.type})`);
+    } catch (err) {
+      console.error('Encoder detection failed:', err);
+    }
+
+    // Forward FFmpeg errors to the renderer
+    recorder.setErrorHandler((error: string) => {
+      if (mainWindow) {
+        mainWindow.webContents.send('ffmpeg-error', { error });
+      }
+    });
+  } else {
+    console.error('FFmpeg recorder not available - recording will not work');
+  }
 
   createWindow();
 
@@ -160,6 +272,16 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+  }
+});
+
+// Close any dangling file handles on quit
+app.on('before-quit', async () => {
+  for (const [id, handle] of openFileHandles) {
+    try {
+      await handle.close();
+    } catch { /* ignore */ }
+    openFileHandles.delete(id);
   }
 });
 
@@ -228,6 +350,55 @@ ipcMain.handle('save-file', async (_, filePath: string, buffer: ArrayBuffer) => 
     return { success: true, path: filePath };
   } catch (error) {
     console.error('Error saving file:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+// --- Streaming file write handlers ---
+
+// Open a file for incremental writing
+ipcMain.handle('stream-file-open', async (_, filePath: string) => {
+  try {
+    const dir = path.dirname(filePath);
+    await fs.promises.mkdir(dir, { recursive: true });
+    const handle = await fs.promises.open(filePath, 'w');
+    const id = nextFileHandleId++;
+    openFileHandles.set(id, handle);
+    return { success: true, handleId: id };
+  } catch (error) {
+    console.error('Error opening file for streaming:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+// Append a chunk to an open file (fire-and-forget via `on`/`send` — no IPC
+// round-trip needed, the renderer doesn't wait for the write to finish)
+ipcMain.on('stream-file-append', async (_, handleId: number, chunk: ArrayBuffer) => {
+  try {
+    const handle = openFileHandles.get(handleId);
+    if (!handle) {
+      console.error(`Invalid file handle: ${handleId}`);
+      return;
+    }
+    await handle.write(Buffer.from(chunk));
+  } catch (error) {
+    console.error('Error appending chunk:', error);
+  }
+});
+
+// Close a file handle
+ipcMain.handle('stream-file-close', async (_, handleId: number) => {
+  try {
+    const handle = openFileHandles.get(handleId);
+    if (!handle) {
+      return { success: false, error: `Invalid file handle: ${handleId}` };
+    }
+    await handle.close();
+    openFileHandles.delete(handleId);
+    return { success: true };
+  } catch (error) {
+    console.error('Error closing file handle:', error);
+    openFileHandles.delete(handleId);
     return { success: false, error: String(error) };
   }
 });
@@ -395,5 +566,90 @@ ipcMain.on('recording-state-changed', (_, state: { recordingState: string; durat
 ipcMain.on('floating-control-action', (_, action: string) => {
   if (mainWindow) {
     mainWindow.webContents.send('floating-control-action', action);
+  }
+});
+
+// --- Window management ---
+ipcMain.handle('minimize-main-window', () => {
+  if (mainWindow) mainWindow.minimize();
+  return { success: true };
+});
+
+ipcMain.handle('restore-main-window', () => {
+  if (mainWindow) {
+    mainWindow.restore();
+    mainWindow.show();
+  }
+  return { success: true };
+});
+
+// --- Camera bubble IPC handlers ---
+
+ipcMain.handle('show-camera-bubble', (_, config: CameraBubbleConfig) => {
+  createCameraBubble(config);
+  return { success: true };
+});
+
+ipcMain.handle('hide-camera-bubble', () => {
+  destroyCameraBubble();
+  return { success: true };
+});
+
+// --- FFmpeg sidecar recording handlers ---
+
+ipcMain.handle('ffmpeg-detect-encoder', async () => {
+  try {
+    return await recorder.detectEncoder();
+  } catch (error) {
+    return { encoder: 'libx264', type: 'software' };
+  }
+});
+
+ipcMain.handle('ffmpeg-start-recording', async (_, config: RecordingConfig) => {
+  if (!recorder) {
+    return { success: false, error: 'FFmpeg recorder not initialized. FFmpeg binary may not be found.' };
+  }
+  try {
+    const result = await recorder.start(config);
+    console.log('ffmpeg-start-recording result:', JSON.stringify(result));
+    return result;
+  } catch (error) {
+    console.error('ffmpeg-start-recording error:', error);
+    return { success: false, error: String(error) };
+  }
+});
+
+ipcMain.handle('ffmpeg-pause-recording', async () => {
+  return recorder.pause();
+});
+
+ipcMain.handle('ffmpeg-resume-recording', async () => {
+  return recorder.resume();
+});
+
+ipcMain.handle('ffmpeg-stop-recording', async () => {
+  return recorder.stop();
+});
+
+ipcMain.handle('ffmpeg-post-process-camera', async (_, config: {
+  screenPath: string;
+  cameraPath: string;
+  outputPath: string;
+  cameraSize: number;
+  cameraPosition: { x: number; y: number };
+  cameraShape: string;
+  outputWidth: number;
+  outputHeight: number;
+  previewWidth: number;
+  previewHeight: number;
+}) => {
+  if (!recorder) {
+    return { success: false, error: 'FFmpeg recorder not initialized' };
+  }
+  try {
+    return await recorder.postProcessCamera(config as any);
+  } catch (error) {
+    console.error('ffmpeg-post-process-camera error:', error);
+    return { success: false, error: String(error) };
   }
 });

@@ -155,6 +155,13 @@ interface AppState {
   addCustomBackground: (background: BackgroundOption) => void;
   removeCustomBackground: (id: string) => void;
 
+  // Preview camera stream (shared so RecordingControls can release it for dshow)
+  previewCameraStream: MediaStream | null;
+  setPreviewCameraStream: (stream: MediaStream | null) => void;
+  // Suspend preview camera so FFmpeg dshow can access the device
+  previewCameraSuspended: boolean;
+  setPreviewCameraSuspended: (suspended: boolean) => void;
+
   // Web screen stream (shared between Preview and RecordingControls on web)
   webScreenStream: MediaStream | null;
   setWebScreenStream: (stream: MediaStream | null) => void;
@@ -255,6 +262,13 @@ export const useStore = create<AppState>((set) => ({
         selectedId: state.backgroundConfig.selectedId === id ? 'gradient-1' : state.backgroundConfig.selectedId,
       },
     })),
+
+  // Preview camera stream
+  previewCameraStream: null,
+  setPreviewCameraStream: (stream) => set({ previewCameraStream: stream }),
+  // Preview camera suspension
+  previewCameraSuspended: false,
+  setPreviewCameraSuspended: (suspended) => set({ previewCameraSuspended: suspended }),
 
   // Web screen stream
   webScreenStream: null,
