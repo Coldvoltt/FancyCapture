@@ -506,6 +506,9 @@ export class FFmpegRecorder {
     }
 
     // Screen input (gdigrab)
+    // Each input uses its own device timestamps. The setpts/asetpts filters
+    // in the output normalize both to start at PTS=0, and aresample=async
+    // handles any ongoing clock drift — no wallclock override needed.
     if (hasScreen) {
       args.push('-thread_queue_size', '512');
       args.push('-f', 'gdigrab');
@@ -555,8 +558,8 @@ export class FFmpegRecorder {
       const ca = config.backgroundContentArea!;
       let filterParts: string[] = [];
 
-      // Scale screen to fill content area exactly
-      filterParts.push(`[${screenInputIdx}:v]scale=${ca.w}:${ca.h}[screen]`);
+      // Normalize screen PTS to start at 0 (eliminates startup offset), then scale
+      filterParts.push(`[${screenInputIdx}:v]setpts=PTS-STARTPTS,scale=${ca.w}:${ca.h}[screen]`);
 
       // Overlay screen on background
       filterParts.push(`[${bgInputIdx}:v][screen]overlay=${ca.x}:${ca.y}:shortest=1[bg_out]`);
@@ -570,33 +573,49 @@ export class FFmpegRecorder {
         lastLabel = 'out';
       }
 
+      // Offset audio PTS by 1s to compensate for gdigrab→dshow startup delay,
+      // aresample fills the gap with silence and corrects ongoing drift
+      if (micInputIdx >= 0) {
+        filterParts.push(`[${micInputIdx}:a]asetpts=PTS-STARTPTS+1/TB,aresample=async=1000,apad[aout]`);
+      }
+
       args.push('-filter_complex', filterParts.join(';'));
       args.push('-map', `[${lastLabel}]`);
       if (micInputIdx >= 0) {
-        args.push('-map', `${micInputIdx}:a`);
+        args.push('-map', '[aout]');
+        args.push('-shortest');
       }
     } else if (config.mode === 'screen-camera' && hasScreen && hasCamera) {
       // Screen + camera overlay with filter graph (no background)
       const filterGraph = this.buildFilterGraph(config, screenInputIdx, cameraInputIdx);
-      args.push('-filter_complex', filterGraph);
+      // Offset audio PTS by 1s to compensate for gdigrab→dshow startup delay
+      const audioFilter = micInputIdx >= 0 ? `;[${micInputIdx}:a]asetpts=PTS-STARTPTS+1/TB,aresample=async=1000,apad[aout]` : '';
+      args.push('-filter_complex', filterGraph + audioFilter);
       args.push('-map', '[out]');
       if (micInputIdx >= 0) {
-        args.push('-map', `${micInputIdx}:a`);
+        args.push('-map', '[aout]');
+        args.push('-shortest');
       }
     } else if (config.mode === 'camera' && hasCamera) {
-      // Camera-only with hflip
-      args.push('-vf', 'hflip');
+      // Camera-only: normalize PTS to eliminate startup offset, then hflip
+      args.push('-vf', 'setpts=PTS-STARTPTS,hflip');
       args.push('-map', `${cameraInputIdx}:v`);
       if (micInputIdx >= 0) {
         args.push('-map', `${micInputIdx}:a`);
+        args.push('-af', 'asetpts=PTS-STARTPTS,aresample=async=1000,apad');
+        args.push('-shortest');
       }
     } else {
-      // Screen-only (or fallback)
+      // Screen-only (or fallback): normalize PTS to eliminate startup offset
       if (screenInputIdx >= 0) {
         args.push('-map', `${screenInputIdx}:v`);
+        args.push('-vf', 'setpts=PTS-STARTPTS');
       }
       if (micInputIdx >= 0) {
         args.push('-map', `${micInputIdx}:a`);
+        // Offset audio by 1s to compensate for gdigrab→dshow startup delay
+        args.push('-af', 'asetpts=PTS-STARTPTS+1/TB,aresample=async=1000,apad');
+        args.push('-shortest');
       }
     }
 
@@ -673,16 +692,16 @@ export class FFmpegRecorder {
 
     let camFilter: string;
     if (config.cameraShape === 'circle') {
-      // Circle mask using geq alpha filter
+      // Circle mask using geq alpha filter; setpts normalizes PTS to start at 0
       camFilter = [
-        `[${camIdx}:v]hflip,${cropAndScale},format=yuva420p,`,
+        `[${camIdx}:v]setpts=PTS-STARTPTS,hflip,${cropAndScale},format=yuva420p,`,
         `geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':`,
         `a='if(lte(pow(X-${r},2)+pow(Y-${r},2),pow(${r},2)),255,0)'`,
         `[cam]`,
       ].join('');
     } else {
-      // Rounded rectangle — crop to square, scale, no mask
-      camFilter = `[${camIdx}:v]hflip,${cropAndScale}[cam]`;
+      // Rounded rectangle — crop to square, scale, no mask; setpts normalizes PTS
+      camFilter = `[${camIdx}:v]setpts=PTS-STARTPTS,hflip,${cropAndScale}[cam]`;
     }
 
     // When baseLabel is provided (background mode), overlay camera on that label
@@ -690,17 +709,17 @@ export class FFmpegRecorder {
       return `${camFilter};[${baseLabel}][cam]overlay=${camX}:${camY}[out]`;
     }
 
-    // Apply resolution scaling to screen if needed
+    // Apply resolution scaling to screen if needed; setpts normalizes PTS to start at 0
     let screenFilter = '';
     if (config.outputResolution !== 'source') {
       const res = this.getResolution(config.outputResolution);
       if (res) {
-        screenFilter = `[${screenIdx}:v]scale=${res.w}:${res.h}:force_original_aspect_ratio=decrease,pad=${res.w}:${res.h}:(ow-iw)/2:(oh-ih)/2[screen];`;
+        screenFilter = `[${screenIdx}:v]setpts=PTS-STARTPTS,scale=${res.w}:${res.h}:force_original_aspect_ratio=decrease,pad=${res.w}:${res.h}:(ow-iw)/2:(oh-ih)/2[screen];`;
         return `${screenFilter}${camFilter};[screen][cam]overlay=${camX}:${camY}[out]`;
       }
     }
 
-    return `${camFilter};[${screenIdx}:v][cam]overlay=${camX}:${camY}[out]`;
+    return `${camFilter};[${screenIdx}:v]setpts=PTS-STARTPTS[sp];[sp][cam]overlay=${camX}:${camY}[out]`;
   }
 
   private getResolution(preset: string): { w: number; h: number } | null {
