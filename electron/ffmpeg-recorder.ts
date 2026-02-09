@@ -26,12 +26,6 @@ export interface RecordingConfig {
   useFloatingCamera?: boolean;
   // Constrain gdigrab to a specific region (for single-monitor capture)
   screenRegion?: { x: number; y: number; w: number; h: number };
-  // Pre-rendered background PNG (base64 data URL) and content area for overlay
-  backgroundData?: string;
-  // Foreground overlay PNG for corner clipping (base64 data URL)
-  foregroundData?: string;
-  backgroundContentArea?: { x: number; y: number; w: number; h: number };
-  backgroundOutputSize?: { w: number; h: number };
 }
 
 export interface EncoderInfo {
@@ -53,8 +47,6 @@ export class FFmpegRecorder {
   private stderrLog = '';
   private onError: ((error: string) => void) | null = null;
   private cachedDshowDevices: { video: string[]; audio: string[] } | null = null;
-  private backgroundTempFile: string | null = null;
-  private foregroundTempFile: string | null = null;
 
   constructor() {
     this.ffmpegPath = getFFmpegPath();
@@ -277,34 +269,6 @@ export class FFmpegRecorder {
       return { success: false, error: `Cannot create output folder: ${err}` };
     }
 
-    // Save background and foreground PNGs to temp files if provided
-    this.backgroundTempFile = null;
-    this.foregroundTempFile = null;
-    if (config.backgroundData && config.backgroundContentArea) {
-      try {
-        const ts = Date.now();
-        const bgPath = path.join(config.outputFolder, `_bg_temp_${ts}.png`);
-        const base64 = config.backgroundData.split(',')[1];
-        if (base64) {
-          await fs.promises.writeFile(bgPath, Buffer.from(base64, 'base64'));
-          this.backgroundTempFile = bgPath;
-          console.log('Background saved to:', bgPath);
-        }
-        // Save foreground corner-clip overlay
-        if (config.foregroundData) {
-          const fgPath = path.join(config.outputFolder, `_fg_temp_${ts}.png`);
-          const fgBase64 = config.foregroundData.split(',')[1];
-          if (fgBase64) {
-            await fs.promises.writeFile(fgPath, Buffer.from(fgBase64, 'base64'));
-            this.foregroundTempFile = fgPath;
-            console.log('Foreground saved to:', fgPath);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to save background/foreground temp files:', err);
-      }
-    }
-
     return this.startSegment();
   }
 
@@ -461,27 +425,6 @@ export class FFmpegRecorder {
       }
     }
 
-    // Post-process background overlay if background was enabled.
-    // The recording itself is screen-only (for perfect audio sync);
-    // the background PNG is composited as a file-to-file operation here.
-    if (this.backgroundTempFile && this.config?.backgroundContentArea) {
-      const bgResult = await this.postProcessBackground();
-      if (!bgResult.success) {
-        console.error('Background post-processing failed:', bgResult.error);
-        // The raw screen recording is still usable as fallback
-      }
-    }
-
-    // Clean up background and foreground temp files
-    if (this.backgroundTempFile) {
-      try { await fs.promises.unlink(this.backgroundTempFile); } catch { /* ignore */ }
-      this.backgroundTempFile = null;
-    }
-    if (this.foregroundTempFile) {
-      try { await fs.promises.unlink(this.foregroundTempFile); } catch { /* ignore */ }
-      this.foregroundTempFile = null;
-    }
-
     this.state = 'idle';
     return { success: true, outputPath: this.outputFile };
   }
@@ -499,9 +442,6 @@ export class FFmpegRecorder {
       && (config.mode === 'camera' || config.mode === 'screen-camera')
       && !config.useFloatingCamera;
     const hasMic = !!config.microphoneLabel;
-    // Background is handled as post-processing (not live overlay) to avoid
-    // audio-video desync from the real-time filter chain. The temp files are
-    // still saved in start() for use by postProcessBackground() in stop().
 
     // Track input indices for filter mapping
     let inputIndex = 0;
@@ -557,7 +497,7 @@ export class FFmpegRecorder {
     // --- Filters and mapping ---
 
     if (config.mode === 'screen-camera' && hasScreen && hasCamera) {
-      // Screen + camera overlay with filter graph (no background)
+      // Screen + camera overlay with filter graph
       const filterGraph = this.buildFilterGraph(config, screenInputIdx, cameraInputIdx);
       const audioFilter = micInputIdx >= 0 ? `;[${micInputIdx}:a]asetpts=PTS-STARTPTS+0.85/TB,aresample=async=1[aout]` : '';
       args.push('-filter_complex', filterGraph + audioFilter);
@@ -637,13 +577,8 @@ export class FFmpegRecorder {
 
   private buildFilterGraph(config: RecordingConfig, screenIdx: number, camIdx: number, baseLabel?: string): string {
     // Scale camera position and size from preview coordinates to output coordinates.
-    // When background is enabled (baseLabel provided), map to full background output size
-    // so the camera can extend into the padding area. Otherwise map to screen resolution.
     let targetW = 1920, targetH = 1080;
-    if (baseLabel && config.backgroundOutputSize) {
-      targetW = config.backgroundOutputSize.w;
-      targetH = config.backgroundOutputSize.h;
-    } else if (config.outputResolution !== 'source') {
+    if (config.outputResolution !== 'source') {
       const res = this.getResolution(config.outputResolution);
       if (res) { targetW = res.w; targetH = res.h; }
     }
@@ -671,7 +606,7 @@ export class FFmpegRecorder {
       camFilter = `[${camIdx}:v]setpts=PTS-STARTPTS,hflip,${cropAndScale}[cam]`;
     }
 
-    // When baseLabel is provided (background mode), overlay camera on that label
+    // When baseLabel is provided, overlay camera on that label instead of screen
     if (baseLabel) {
       return `${camFilter};[${baseLabel}][cam]overlay=${camX}:${camY}[out]`;
     }
@@ -788,8 +723,7 @@ export class FFmpegRecorder {
 
   /**
    * Post-process: overlay a separately-recorded camera WebM on top of the
-   * screen MP4 at the given position. Used in background mode where the
-   * floating camera bubble can't be positioned in the padding area.
+   * screen MP4 at the given position.
    */
   async postProcessCamera(config: {
     screenPath: string;
@@ -909,125 +843,6 @@ export class FFmpegRecorder {
         }, 300000);
       } catch (err) {
         resolve({ success: false, error: `Exception during post-processing: ${err}` });
-      }
-    });
-  }
-
-  /**
-   * Post-process: overlay screen recording on a background PNG (and optional
-   * foreground PNG for corner clipping). Used when background mode is enabled
-   * — the recording itself is screen-only for perfect audio sync, and the
-   * background is composited as a file-to-file operation afterwards.
-   */
-  private async postProcessBackground(): Promise<{ success: boolean; error?: string }> {
-    if (!this.backgroundTempFile || !this.config?.backgroundContentArea) {
-      return { success: false, error: 'No background data available for post-processing' };
-    }
-
-    const encoder = await this.detectEncoder();
-    const ca = this.config.backgroundContentArea;
-    const screenPath = this.outputFile;
-
-    // Rename the screen recording to a temp path so FFmpeg can read it
-    // while writing to the final output path
-    const tempScreenPath = screenPath.replace(/\.mp4$/, '_screen_temp.mp4');
-    try {
-      await fs.promises.rename(screenPath, tempScreenPath);
-      console.log('Renamed screen file for background post-processing:', screenPath, '→', tempScreenPath);
-    } catch (err) {
-      return { success: false, error: `Failed to rename screen file for post-processing: ${err}` };
-    }
-
-    // Build filter: scale screen to content area, overlay on background PNG
-    let filterParts: string[] = [];
-    filterParts.push(`[1:v]scale=${ca.w}:${ca.h}[screen]`);
-    filterParts.push(`[0:v][screen]overlay=${ca.x}:${ca.y}:shortest=1[bg_out]`);
-
-    let lastLabel = 'bg_out';
-
-    // Optional foreground overlay (rounded corner clipping)
-    if (this.foregroundTempFile) {
-      filterParts.push(`[${lastLabel}][2:v]overlay=0:0:shortest=1[fg_out]`);
-      lastLabel = 'fg_out';
-    }
-
-    const filterComplex = filterParts.join(';');
-
-    // Match background PNG framerate to screen recording so overlay PTS aligns with audio
-    const fps = this.config.fps || 30;
-
-    const args: string[] = [
-      '-y',
-      '-loop', '1', '-framerate', String(fps), '-i', this.backgroundTempFile,
-      '-i', tempScreenPath,
-    ];
-
-    if (this.foregroundTempFile) {
-      args.push('-loop', '1', '-framerate', String(fps), '-i', this.foregroundTempFile);
-    }
-
-    args.push(
-      '-filter_complex', filterComplex,
-      '-map', `[${lastLabel}]`,
-      '-map', '1:a?',
-      '-c:v', encoder.encoder,
-    );
-
-    // Encoder-specific settings (same as postProcessCamera)
-    if (encoder.encoder === 'libx264') {
-      args.push('-preset', 'fast', '-crf', '18');
-    } else if (encoder.encoder === 'h264_nvenc') {
-      args.push('-preset', 'p4', '-cq', '18', '-rc', 'vbr');
-    } else if (encoder.encoder === 'h264_amf') {
-      args.push('-quality', 'speed', '-rc', 'cqp', '-qp_i', '18', '-qp_p', '18');
-    } else if (encoder.encoder === 'h264_qsv') {
-      args.push('-preset', 'veryfast', '-global_quality', '18');
-    }
-
-    args.push('-pix_fmt', encoder.encoder === 'h264_qsv' ? 'nv12' : 'yuv420p');
-    args.push('-c:a', 'copy');
-    args.push('-movflags', '+faststart');
-    args.push(screenPath);
-
-    console.log('Post-process background command:', this.ffmpegPath, args.join(' '));
-
-    return new Promise((resolve) => {
-      try {
-        const proc = spawn(this.ffmpegPath, args, {
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-
-        let stderr = '';
-        proc.stderr?.on('data', (data: Buffer) => {
-          stderr += data.toString();
-        });
-
-        proc.on('close', (code) => {
-          // Clean up temp screen file
-          try { fs.unlinkSync(tempScreenPath); } catch { /* ignore */ }
-
-          if (code === 0) {
-            console.log('Background post-processing completed successfully');
-            resolve({ success: true });
-          } else {
-            const errLines = stderr.split('\n').filter(l =>
-              /error|could not|cannot|failed|invalid/i.test(l)
-            ).slice(-5).join('\n');
-            resolve({ success: false, error: `Background post-process failed (code ${code}): ${errLines || stderr.slice(-500)}` });
-          }
-        });
-
-        proc.on('error', (err) => {
-          resolve({ success: false, error: `Failed to spawn FFmpeg for background post-processing: ${err.message}` });
-        });
-
-        // Timeout: 5 minutes max
-        setTimeout(() => {
-          try { proc.kill(); } catch { /* ignore */ }
-          resolve({ success: false, error: 'Background post-processing timed out after 5 minutes' });
-        }, 300000);
-      } catch (err) {
-        resolve({ success: false, error: `Exception during background post-processing: ${err}` });
       }
     });
   }

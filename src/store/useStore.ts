@@ -44,49 +44,6 @@ export interface ZoomConfig {
   y: number;
 }
 
-export interface BackgroundOption {
-  id: string;
-  type: 'gradient' | 'image';
-  value: string; // CSS gradient or image data URL
-  name: string;
-}
-
-export interface BackgroundConfig {
-  enabled: boolean;
-  selectedId: string | null;
-  padding: number; // Padding around the screen recording
-  borderRadius: number; // Border radius for the screen recording
-  customBackgrounds: BackgroundOption[];
-}
-
-// Default gradient backgrounds
-export const defaultBackgrounds: BackgroundOption[] = [
-  {
-    id: 'gradient-1',
-    type: 'gradient',
-    value: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-    name: 'Purple Dream',
-  },
-  {
-    id: 'gradient-2',
-    type: 'gradient',
-    value: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-    name: 'Pink Sunset',
-  },
-  {
-    id: 'gradient-3',
-    type: 'gradient',
-    value: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
-    name: 'Ocean Blue',
-  },
-  {
-    id: 'gradient-4',
-    type: 'gradient',
-    value: 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
-    name: 'Fresh Mint',
-  },
-];
-
 interface AppState {
   // Recording mode
   recordingMode: RecordingMode;
@@ -150,12 +107,6 @@ interface AppState {
   setShowSourcePicker: (show: boolean) => void;
   showSettings: boolean;
   setShowSettings: (show: boolean) => void;
-
-  // Background settings
-  backgroundConfig: BackgroundConfig;
-  setBackgroundConfig: (config: Partial<BackgroundConfig>) => void;
-  addCustomBackground: (background: BackgroundOption) => void;
-  removeCustomBackground: (id: string) => void;
 
   // Preview camera stream (shared so RecordingControls can release it for dshow)
   previewCameraStream: MediaStream | null;
@@ -238,32 +189,6 @@ export const useStore = create<AppState>((set) => ({
   setShowSourcePicker: (show) => set({ showSourcePicker: show }),
   showSettings: false,
   setShowSettings: (show) => set({ showSettings: show }),
-
-  // Background settings
-  backgroundConfig: {
-    enabled: false,
-    selectedId: 'gradient-1',
-    padding: 40,
-    borderRadius: 12,
-    customBackgrounds: [],
-  },
-  setBackgroundConfig: (config) =>
-    set((state) => ({ backgroundConfig: { ...state.backgroundConfig, ...config } })),
-  addCustomBackground: (background) =>
-    set((state) => ({
-      backgroundConfig: {
-        ...state.backgroundConfig,
-        customBackgrounds: [...state.backgroundConfig.customBackgrounds, background],
-      },
-    })),
-  removeCustomBackground: (id) =>
-    set((state) => ({
-      backgroundConfig: {
-        ...state.backgroundConfig,
-        customBackgrounds: state.backgroundConfig.customBackgrounds.filter((bg) => bg.id !== id),
-        selectedId: state.backgroundConfig.selectedId === id ? 'gradient-1' : state.backgroundConfig.selectedId,
-      },
-    })),
 
   // Preview camera stream
   previewCameraStream: null,

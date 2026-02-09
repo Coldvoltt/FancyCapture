@@ -25,12 +25,7 @@ export interface ConversionProgress {
   percent?: number;
 }
 
-export interface ImageImportResult {
-  success: boolean;
-  dataUrl?: string;
-  name?: string;
-  error?: string;
-}
+
 
 const electronAPI = {
   getSources: (): Promise<ScreenSource[]> => ipcRenderer.invoke('get-sources'),
@@ -56,9 +51,6 @@ const electronAPI = {
   removeConversionProgressListener: () => {
     ipcRenderer.removeAllListeners('conversion-progress');
   },
-  importBackgroundImage: (): Promise<ImageImportResult> =>
-    ipcRenderer.invoke('import-background-image'),
-
   // Floating controls
   showFloatingControls: (): Promise<{ success: boolean }> =>
     ipcRenderer.invoke('show-floating-controls'),
@@ -124,10 +116,6 @@ const electronAPI = {
     previewHeight: number;
     useFloatingCamera?: boolean;
     screenRegion?: { x: number; y: number; w: number; h: number };
-    backgroundData?: string;
-    foregroundData?: string;
-    backgroundContentArea?: { x: number; y: number; w: number; h: number };
-    backgroundOutputSize?: { w: number; h: number };
   }): Promise<{ success: boolean; error?: string }> =>
     ipcRenderer.invoke('ffmpeg-start-recording', config),
   ffmpegPauseRecording: (): Promise<{ success: boolean; error?: string }> =>

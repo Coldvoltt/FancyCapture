@@ -534,36 +534,6 @@ ipcMain.handle('convert-to-mp4', async (_, webmPath: string, mp4Path: string) =>
   });
 });
 
-// Import background image
-ipcMain.handle('import-background-image', async () => {
-  try {
-    const result = await dialog.showOpenDialog(mainWindow!, {
-      title: 'Select Background Image',
-      properties: ['openFile'],
-      filters: [
-        { name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] },
-      ],
-    });
-
-    if (result.canceled || result.filePaths.length === 0) {
-      return { success: false, error: 'No file selected' };
-    }
-
-    const filePath = result.filePaths[0];
-    const fileName = path.basename(filePath, path.extname(filePath));
-    const buffer = await fs.promises.readFile(filePath);
-    const extension = path.extname(filePath).toLowerCase().slice(1);
-    const mimeType = extension === 'jpg' ? 'image/jpeg' : `image/${extension}`;
-    const base64 = buffer.toString('base64');
-    const dataUrl = `data:${mimeType};base64,${base64}`;
-
-    return { success: true, dataUrl, name: fileName };
-  } catch (error) {
-    console.error('Error importing background image:', error);
-    return { success: false, error: String(error) };
-  }
-});
-
 // Floating controls IPC handlers
 ipcMain.handle('show-floating-controls', () => {
   createFloatingControls();

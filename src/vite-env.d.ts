@@ -42,11 +42,6 @@ interface ElectronAPI {
     percent?: number;
   }) => void) => void;
   removeConversionProgressListener: () => void;
-  importBackgroundImage: () => Promise<{
-    success: boolean;
-    dataUrl?: string;
-    name?: string;
-  }>;
   showFloatingControls: () => void;
   hideFloatingControls: () => void;
   sendRecordingState: (state: any) => void;
@@ -87,10 +82,6 @@ interface ElectronAPI {
     previewHeight: number;
     useFloatingCamera?: boolean;
     screenRegion?: { x: number; y: number; w: number; h: number };
-    backgroundData?: string;
-    foregroundData?: string;
-    backgroundContentArea?: { x: number; y: number; w: number; h: number };
-    backgroundOutputSize?: { w: number; h: number };
   }) => Promise<{ success: boolean; error?: string }>;
   ffmpegPauseRecording: () => Promise<{ success: boolean; error?: string }>;
   ffmpegResumeRecording: () => Promise<{ success: boolean; error?: string }>;

@@ -145,41 +145,6 @@ export const platform = {
     return null;
   },
 
-  async importBackgroundImage(): Promise<{
-    success: boolean;
-    dataUrl?: string;
-    name?: string;
-  }> {
-    if (isElectron) return (window as any).electronAPI.importBackgroundImage();
-
-    // Web: use a hidden file input
-    return new Promise((resolve) => {
-      const input = document.createElement('input');
-      input.type = 'file';
-      input.accept = 'image/*';
-      input.onchange = () => {
-        const file = input.files?.[0];
-        if (!file) {
-          resolve({ success: false });
-          return;
-        }
-        const reader = new FileReader();
-        reader.onload = () => {
-          resolve({
-            success: true,
-            dataUrl: reader.result as string,
-            name: file.name,
-          });
-        };
-        reader.onerror = () => resolve({ success: false });
-        reader.readAsDataURL(file);
-      };
-      // User cancelled
-      input.oncancel = () => resolve({ success: false });
-      input.click();
-    });
-  },
-
   // Floating controls — Electron only, no-ops on web
   showFloatingControls(): void {
     if (isElectron) (window as any).electronAPI.showFloatingControls();
@@ -241,10 +206,6 @@ export const platform = {
     previewHeight: number;
     useFloatingCamera?: boolean;
     screenRegion?: { x: number; y: number; w: number; h: number };
-    backgroundData?: string;
-    foregroundData?: string;
-    backgroundContentArea?: { x: number; y: number; w: number; h: number };
-    backgroundOutputSize?: { w: number; h: number };
   }): Promise<{ success: boolean; error?: string }> {
     if (isElectron) return window.electronAPI.ffmpegStartRecording(config);
     return { success: false, error: 'FFmpeg recording not available on web' };

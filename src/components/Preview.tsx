@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useStore, defaultBackgrounds } from '../store/useStore';
+import { useStore } from '../store/useStore';
 import { isElectron } from '../platform';
 
 function Preview() {
@@ -14,16 +14,12 @@ function Preview() {
     selectedCamera,
     zoomConfig,
     setZoomConfig,
-    backgroundConfig,
     setPreviewDimensions,
     webScreenStream,
     isZooming,
     setIsZooming,
     previewCameraSuspended,
   } = useStore();
-
-  const allBackgrounds = [...defaultBackgrounds, ...backgroundConfig.customBackgrounds];
-  const selectedBackground = allBackgrounds.find((bg) => bg.id === backgroundConfig.selectedId);
 
   const screenVideoRef = useRef<HTMLVideoElement>(null);
   const cameraVideoRef = useRef<HTMLVideoElement>(null);
@@ -255,15 +251,6 @@ function Preview() {
     };
   };
 
-  const getBackgroundStyle = () => {
-    if (!backgroundConfig.enabled || !selectedBackground) return {};
-    return {
-      background: selectedBackground.type === 'gradient'
-        ? selectedBackground.value
-        : `url(${selectedBackground.value}) center/cover`,
-    };
-  };
-
   return (
     <div
       ref={previewContainerRef}
@@ -272,14 +259,6 @@ function Preview() {
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      {/* Background layer */}
-      {backgroundConfig.enabled && showScreen && selectedSource && selectedBackground && (
-        <div
-          className="absolute inset-0"
-          style={getBackgroundStyle()}
-        />
-      )}
-
       {/* Empty state */}
       {!selectedSource && showScreen && !showCamera && (
         <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
@@ -296,44 +275,14 @@ function Preview() {
       {/* Screen preview */}
       {showScreen && selectedSource && (
         <div
-          className="absolute transition-transform duration-100 flex flex-col"
-          style={{
-            ...getZoomTransform(),
-            ...(backgroundConfig.enabled ? {
-              inset: `${backgroundConfig.padding}px`,
-              borderRadius: `${backgroundConfig.borderRadius}px`,
-              overflow: 'hidden',
-              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
-            } : {
-              inset: 0,
-            }),
-          }}
+          className="absolute inset-0 transition-transform duration-100"
+          style={getZoomTransform()}
         >
-          {/* Window title bar */}
-          {backgroundConfig.enabled && (
-            <div
-              className="flex items-center px-3 py-2 bg-[#2d2d2d] flex-shrink-0"
-              style={{
-                borderTopLeftRadius: `${backgroundConfig.borderRadius}px`,
-                borderTopRightRadius: `${backgroundConfig.borderRadius}px`,
-              }}
-            >
-              <div className="flex gap-2">
-                <div className="w-3 h-3 rounded-full bg-[#ff5f56]" />
-                <div className="w-3 h-3 rounded-full bg-[#ffbd2e]" />
-                <div className="w-3 h-3 rounded-full bg-[#27ca3f]" />
-              </div>
-            </div>
-          )}
           <video
             ref={screenVideoRef}
             autoPlay
             muted
-            className="w-full flex-1 object-contain"
-            style={backgroundConfig.enabled ? {
-              borderBottomLeftRadius: `${backgroundConfig.borderRadius}px`,
-              borderBottomRightRadius: `${backgroundConfig.borderRadius}px`,
-            } : {}}
+            className="w-full h-full object-contain"
           />
         </div>
       )}
