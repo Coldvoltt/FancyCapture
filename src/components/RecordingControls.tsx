@@ -323,7 +323,8 @@ function RecordingControls() {
         }
       }
 
-      const effectiveFps = hasBackgroundEnabled ? Math.min(state.recordingFps, 30) : state.recordingFps;
+      // Background is now post-processed (not live overlay), so no FPS cap needed
+      const effectiveFps = state.recordingFps;
 
       // Compute screen capture region for gdigrab (constrains to selected monitor)
       let screenRegion: { x: number; y: number; w: number; h: number } | undefined;

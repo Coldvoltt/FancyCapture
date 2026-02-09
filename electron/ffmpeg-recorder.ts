@@ -461,6 +461,17 @@ export class FFmpegRecorder {
       }
     }
 
+    // Post-process background overlay if background was enabled.
+    // The recording itself is screen-only (for perfect audio sync);
+    // the background PNG is composited as a file-to-file operation here.
+    if (this.backgroundTempFile && this.config?.backgroundContentArea) {
+      const bgResult = await this.postProcessBackground();
+      if (!bgResult.success) {
+        console.error('Background post-processing failed:', bgResult.error);
+        // The raw screen recording is still usable as fallback
+      }
+    }
+
     // Clean up background and foreground temp files
     if (this.backgroundTempFile) {
       try { await fs.promises.unlink(this.backgroundTempFile); } catch { /* ignore */ }
@@ -488,29 +499,21 @@ export class FFmpegRecorder {
       && (config.mode === 'camera' || config.mode === 'screen-camera')
       && !config.useFloatingCamera;
     const hasMic = !!config.microphoneLabel;
-    const hasBackground = !!this.backgroundTempFile && !!config.backgroundContentArea;
+    // Background is handled as post-processing (not live overlay) to avoid
+    // audio-video desync from the real-time filter chain. The temp files are
+    // still saved in start() for use by postProcessBackground() in stop().
 
     // Track input indices for filter mapping
     let inputIndex = 0;
-    let bgInputIdx = -1;
     let screenInputIdx = -1;
     let cameraInputIdx = -1;
     let micInputIdx = -1;
 
     // --- Inputs ---
 
-    // Background image (if enabled) — static PNG looped as base layer
-    if (hasBackground) {
-      args.push('-loop', '1', '-framerate', String(config.fps), '-i', this.backgroundTempFile!);
-      bgInputIdx = inputIndex++;
-    }
-
     // Screen input (gdigrab)
-    // Each input uses its own device timestamps. The setpts/asetpts filters
-    // in the output normalize both to start at PTS=0, and aresample=async
-    // handles any ongoing clock drift — no wallclock override needed.
     if (hasScreen) {
-      args.push('-thread_queue_size', '512');
+      args.push('-thread_queue_size', '1024');
       args.push('-f', 'gdigrab');
       args.push('-framerate', String(config.fps));
       args.push('-draw_mouse', '1');
@@ -553,74 +556,37 @@ export class FFmpegRecorder {
 
     // --- Filters and mapping ---
 
-    if (hasBackground && hasScreen) {
-      // Background mode: overlay screen on pre-rendered background PNG
-      const ca = config.backgroundContentArea!;
-      let filterParts: string[] = [];
-
-      // Normalize screen PTS to start at 0 (eliminates startup offset), then scale
-      filterParts.push(`[${screenInputIdx}:v]setpts=PTS-STARTPTS,scale=${ca.w}:${ca.h}[screen]`);
-
-      // Overlay screen on background
-      filterParts.push(`[${bgInputIdx}:v][screen]overlay=${ca.x}:${ca.y}:shortest=1[bg_out]`);
-
-      let lastLabel = 'bg_out';
-
-      // If camera overlay needed (window capture mode with camera)
-      if (hasCamera && cameraInputIdx >= 0) {
-        const camFilterGraph = this.buildFilterGraph(config, -1, cameraInputIdx, lastLabel);
-        filterParts.push(camFilterGraph);
-        lastLabel = 'out';
-      }
-
-      // Offset audio PTS by 1s to compensate for gdigrab→dshow startup delay,
-      // aresample fills the gap with silence and corrects ongoing drift
-      if (micInputIdx >= 0) {
-        filterParts.push(`[${micInputIdx}:a]asetpts=PTS-STARTPTS+1/TB,aresample=async=1000,apad[aout]`);
-      }
-
-      args.push('-filter_complex', filterParts.join(';'));
-      args.push('-map', `[${lastLabel}]`);
-      if (micInputIdx >= 0) {
-        args.push('-map', '[aout]');
-        args.push('-shortest');
-      }
-    } else if (config.mode === 'screen-camera' && hasScreen && hasCamera) {
+    if (config.mode === 'screen-camera' && hasScreen && hasCamera) {
       // Screen + camera overlay with filter graph (no background)
       const filterGraph = this.buildFilterGraph(config, screenInputIdx, cameraInputIdx);
-      // Offset audio PTS by 1s to compensate for gdigrab→dshow startup delay
-      const audioFilter = micInputIdx >= 0 ? `;[${micInputIdx}:a]asetpts=PTS-STARTPTS+1/TB,aresample=async=1000,apad[aout]` : '';
+      const audioFilter = micInputIdx >= 0 ? `;[${micInputIdx}:a]asetpts=PTS-STARTPTS+0.85/TB,aresample=async=1[aout]` : '';
       args.push('-filter_complex', filterGraph + audioFilter);
       args.push('-map', '[out]');
       if (micInputIdx >= 0) {
         args.push('-map', '[aout]');
-        args.push('-shortest');
       }
     } else if (config.mode === 'camera' && hasCamera) {
-      // Camera-only: normalize PTS to eliminate startup offset, then hflip
+      // Camera-only: dshow→dshow, no startup gap offset needed
       args.push('-vf', 'setpts=PTS-STARTPTS,hflip');
       args.push('-map', `${cameraInputIdx}:v`);
       if (micInputIdx >= 0) {
         args.push('-map', `${micInputIdx}:a`);
-        args.push('-af', 'asetpts=PTS-STARTPTS,aresample=async=1000,apad');
-        args.push('-shortest');
+        args.push('-af', 'asetpts=PTS-STARTPTS,aresample=async=1');
       }
     } else {
-      // Screen-only (or fallback): normalize PTS to eliminate startup offset
+      // Screen-only: shift audio 0.8s for gdigrab→dshow startup gap
       if (screenInputIdx >= 0) {
         args.push('-map', `${screenInputIdx}:v`);
         args.push('-vf', 'setpts=PTS-STARTPTS');
       }
       if (micInputIdx >= 0) {
         args.push('-map', `${micInputIdx}:a`);
-        // Offset audio by 1s to compensate for gdigrab→dshow startup delay
-        args.push('-af', 'asetpts=PTS-STARTPTS+1/TB,aresample=async=1000,apad');
-        args.push('-shortest');
+        args.push('-af', 'asetpts=PTS-STARTPTS+0.85/TB,aresample=async=1');
       }
     }
 
-    // --- Resolution scaling (only when no background — background already sets output size) ---
-    if (!hasBackground && config.outputResolution !== 'source' && hasScreen && config.mode !== 'screen-camera') {
+    // --- Resolution scaling ---
+    if (config.outputResolution !== 'source' && hasScreen && config.mode !== 'screen-camera') {
       const res = this.getResolution(config.outputResolution);
       if (res) {
         const existingVf = args.indexOf('-vf');
@@ -649,11 +615,12 @@ export class FFmpegRecorder {
       args.push('-qp_i', '18');
       args.push('-qp_p', '18');
     } else if (encoder.encoder === 'h264_qsv') {
-      args.push('-preset', 'fast');
+      args.push('-preset', 'veryfast');
       args.push('-global_quality', '18');
     }
 
-    args.push('-pix_fmt', 'yuv420p');
+    // QSV natively uses nv12; yuv420p forces an implicit double conversion
+    args.push('-pix_fmt', encoder.encoder === 'h264_qsv' ? 'nv12' : 'yuv420p');
 
     // Fragmented MP4: crash-safe segments (data is usable even if process is killed)
     args.push('-movflags', '+frag_keyframe+empty_moov+default_base_moof');
@@ -874,7 +841,7 @@ export class FFmpegRecorder {
       camFilter = `[1:v]hflip,${cropAndScale}[cam]`;
     }
 
-    const filterComplex = `${camFilter};[0:v][cam]overlay=${camX}:${camY}[out]`;
+    const filterComplex = `${camFilter};[0:v][cam]overlay=${camX}:${camY}:shortest=1[out]`;
 
     const args: string[] = [
       '-y',
@@ -883,6 +850,7 @@ export class FFmpegRecorder {
       '-filter_complex', filterComplex,
       '-map', '[out]',
       '-map', '0:a?',
+      '-shortest',
       '-c:v', encoder.encoder,
     ];
 
@@ -894,10 +862,11 @@ export class FFmpegRecorder {
     } else if (encoder.encoder === 'h264_amf') {
       args.push('-quality', 'speed', '-rc', 'cqp', '-qp_i', '18', '-qp_p', '18');
     } else if (encoder.encoder === 'h264_qsv') {
-      args.push('-preset', 'fast', '-global_quality', '18');
+      args.push('-preset', 'veryfast', '-global_quality', '18');
     }
 
-    args.push('-pix_fmt', 'yuv420p');
+    // QSV natively uses nv12; avoid implicit double conversion
+    args.push('-pix_fmt', encoder.encoder === 'h264_qsv' ? 'nv12' : 'yuv420p');
     args.push('-c:a', 'copy');
     args.push('-movflags', '+faststart');
     args.push(config.outputPath);
@@ -940,6 +909,125 @@ export class FFmpegRecorder {
         }, 300000);
       } catch (err) {
         resolve({ success: false, error: `Exception during post-processing: ${err}` });
+      }
+    });
+  }
+
+  /**
+   * Post-process: overlay screen recording on a background PNG (and optional
+   * foreground PNG for corner clipping). Used when background mode is enabled
+   * — the recording itself is screen-only for perfect audio sync, and the
+   * background is composited as a file-to-file operation afterwards.
+   */
+  private async postProcessBackground(): Promise<{ success: boolean; error?: string }> {
+    if (!this.backgroundTempFile || !this.config?.backgroundContentArea) {
+      return { success: false, error: 'No background data available for post-processing' };
+    }
+
+    const encoder = await this.detectEncoder();
+    const ca = this.config.backgroundContentArea;
+    const screenPath = this.outputFile;
+
+    // Rename the screen recording to a temp path so FFmpeg can read it
+    // while writing to the final output path
+    const tempScreenPath = screenPath.replace(/\.mp4$/, '_screen_temp.mp4');
+    try {
+      await fs.promises.rename(screenPath, tempScreenPath);
+      console.log('Renamed screen file for background post-processing:', screenPath, '→', tempScreenPath);
+    } catch (err) {
+      return { success: false, error: `Failed to rename screen file for post-processing: ${err}` };
+    }
+
+    // Build filter: scale screen to content area, overlay on background PNG
+    let filterParts: string[] = [];
+    filterParts.push(`[1:v]scale=${ca.w}:${ca.h}[screen]`);
+    filterParts.push(`[0:v][screen]overlay=${ca.x}:${ca.y}:shortest=1[bg_out]`);
+
+    let lastLabel = 'bg_out';
+
+    // Optional foreground overlay (rounded corner clipping)
+    if (this.foregroundTempFile) {
+      filterParts.push(`[${lastLabel}][2:v]overlay=0:0:shortest=1[fg_out]`);
+      lastLabel = 'fg_out';
+    }
+
+    const filterComplex = filterParts.join(';');
+
+    // Match background PNG framerate to screen recording so overlay PTS aligns with audio
+    const fps = this.config.fps || 30;
+
+    const args: string[] = [
+      '-y',
+      '-loop', '1', '-framerate', String(fps), '-i', this.backgroundTempFile,
+      '-i', tempScreenPath,
+    ];
+
+    if (this.foregroundTempFile) {
+      args.push('-loop', '1', '-framerate', String(fps), '-i', this.foregroundTempFile);
+    }
+
+    args.push(
+      '-filter_complex', filterComplex,
+      '-map', `[${lastLabel}]`,
+      '-map', '1:a?',
+      '-c:v', encoder.encoder,
+    );
+
+    // Encoder-specific settings (same as postProcessCamera)
+    if (encoder.encoder === 'libx264') {
+      args.push('-preset', 'fast', '-crf', '18');
+    } else if (encoder.encoder === 'h264_nvenc') {
+      args.push('-preset', 'p4', '-cq', '18', '-rc', 'vbr');
+    } else if (encoder.encoder === 'h264_amf') {
+      args.push('-quality', 'speed', '-rc', 'cqp', '-qp_i', '18', '-qp_p', '18');
+    } else if (encoder.encoder === 'h264_qsv') {
+      args.push('-preset', 'veryfast', '-global_quality', '18');
+    }
+
+    args.push('-pix_fmt', encoder.encoder === 'h264_qsv' ? 'nv12' : 'yuv420p');
+    args.push('-c:a', 'copy');
+    args.push('-movflags', '+faststart');
+    args.push(screenPath);
+
+    console.log('Post-process background command:', this.ffmpegPath, args.join(' '));
+
+    return new Promise((resolve) => {
+      try {
+        const proc = spawn(this.ffmpegPath, args, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+        });
+
+        let stderr = '';
+        proc.stderr?.on('data', (data: Buffer) => {
+          stderr += data.toString();
+        });
+
+        proc.on('close', (code) => {
+          // Clean up temp screen file
+          try { fs.unlinkSync(tempScreenPath); } catch { /* ignore */ }
+
+          if (code === 0) {
+            console.log('Background post-processing completed successfully');
+            resolve({ success: true });
+          } else {
+            const errLines = stderr.split('\n').filter(l =>
+              /error|could not|cannot|failed|invalid/i.test(l)
+            ).slice(-5).join('\n');
+            resolve({ success: false, error: `Background post-process failed (code ${code}): ${errLines || stderr.slice(-500)}` });
+          }
+        });
+
+        proc.on('error', (err) => {
+          resolve({ success: false, error: `Failed to spawn FFmpeg for background post-processing: ${err.message}` });
+        });
+
+        // Timeout: 5 minutes max
+        setTimeout(() => {
+          try { proc.kill(); } catch { /* ignore */ }
+          resolve({ success: false, error: 'Background post-processing timed out after 5 minutes' });
+        }, 300000);
+      } catch (err) {
+        resolve({ success: false, error: `Exception during background post-processing: ${err}` });
       }
     });
   }
